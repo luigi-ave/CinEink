@@ -1,0 +1,46 @@
+name: Update poster
+
+on:
+  schedule:
+    - cron: "23 */4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-art
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Download and convert a new poster
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: python scripts/update_art.py --out docs
+
+      - name: Publish to the art branch (orphan, single commit)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title=$(python -c "import json;print(json.load(open('docs/meta.json'))['title'][:60])")
+          cd docs
+          git init -b art
+          git config user.name "cineink-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add .
+          git commit -m "New poster: $title"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" art
