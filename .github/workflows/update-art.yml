@@ -2,7 +2,7 @@ name: Update poster
 
 on:
   schedule:
-    - cron: "23 */4 * * *"
+    - cron: "23 5 * * *"
   workflow_dispatch: {}
 
 permissions:
