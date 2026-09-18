@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Download the poster of a popular movie from TMDB and convert it to the
 native format of the Waveshare 7.3" e-Paper (E) panel: 800x480, 6 colors,
-4 bits per pixel (2 pixels per byte).
+4 bits per pixel (2 pixels per byte). The poster is composed in 480x800,
+for a frame hung vertically, and the buffer is rotated for the panel.
 
 Requires the free themoviedb.org API key in the TMDB_API_KEY environment
 variable (not needed with --from-file, which converts a local image).
@@ -37,6 +38,7 @@ PALETTE = [
     ((0, 0, 255), 0x5),      # blue
     ((0, 255, 0), 0x6),      # green
 ]
+WHITE = 1  # index of white in PALETTE, used for the bars
 
 TIMEOUT = 60
 
@@ -104,20 +106,33 @@ def pick_and_download(rng, key):
     return meta, img
 
 
-def convert(img, portrait):
-    """Fills the whole panel (scale and center crop) and reduces the image
-    to the 6 colors with Floyd-Steinberg dithering. With portrait=True it
-    composes in 480x800, for a frame hung vertically."""
-    target = (HEIGHT, WIDTH) if portrait else (WIDTH, HEIGHT)
+def convert(img, fill):
+    """Scales the image onto the 480x800 portrait panel and reduces it to
+    the 6 colors with Floyd-Steinberg dithering. fill goes from 0 (the
+    whole image is kept, with two white bars top and bottom) to 0.5 (half
+    of the excess is center cropped, the other half becomes bars)."""
+    target = (HEIGHT, WIDTH)  # portrait: 480 wide, 800 tall
     img = ImageOps.exif_transpose(img).convert("RGB")
-    img = ImageOps.fit(img, target, Image.Resampling.LANCZOS)
+    w, h = img.size
+    contain = min(target[0] / w, target[1] / h)  # whole image, with bars
+    cover = max(target[0] / w, target[1] / h)    # full panel, cropped
+    scale = contain + (cover - contain) * fill
+    size = (min(target[0], round(w * scale)), min(target[1], round(h * scale)))
+    img = ImageOps.fit(img, size, Image.Resampling.LANCZOS)
     # on e-ink a bit of extra saturation and contrast looks better
     img = ImageEnhance.Color(img).enhance(1.25)
     img = ImageEnhance.Contrast(img).enhance(1.05)
 
     pal = Image.new("P", (1, 1))
     pal.putpalette([c for rgb, _ in PALETTE for c in rgb])
-    return img.quantize(palette=pal, dither=Image.Dither.FLOYDSTEINBERG)
+    dithered = img.quantize(palette=pal, dither=Image.Dither.FLOYDSTEINBERG)
+
+    # the white bars are added after dithering so they stay a pure color
+    frame = Image.new("P", target, WHITE)
+    frame.putpalette(pal.getpalette())
+    frame.paste(dithered, ((target[0] - dithered.width) // 2,
+                           (target[1] - dithered.height) // 2))
+    return frame
 
 
 def pack(dithered):
@@ -133,13 +148,16 @@ def pack(dithered):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="docs", help="output folder")
-    ap.add_argument("--orientation", choices=["portrait", "landscape"],
-                    default="portrait",
-                    help="frame orientation (default: portrait)")
+    ap.add_argument("--fill", type=float, default=0, metavar="0..0.5",
+                    help="0 = whole poster with white bars, 0.5 = half "
+                         "cropped and half bars, in between a bit of both "
+                         "(default: 0)")
     ap.add_argument("--from-file", metavar="PATH",
                     help="convert a local image instead of downloading one")
     ap.add_argument("--seed", type=int, help="random seed (for tests)")
     args = ap.parse_args()
+    if not 0 <= args.fill <= 0.5:
+        ap.error("--fill must be between 0 and 0.5")
 
     key = os.environ.get("TMDB_API_KEY")
     if not args.from_file and not key:
@@ -160,14 +178,10 @@ def main():
         except RuntimeError as e:
             sys.exit("Error: %s" % e)
 
-    portrait = args.orientation == "portrait"
-    dithered = convert(img, portrait)
-    frame = dithered
-    if portrait:
-        # The panel always scans in 800x480: the buffer must be rotated.
-        # If the image comes out upside down on your frame, use ROTATE_90.
-        frame = dithered.transpose(Image.Transpose.ROTATE_270)
-    data = pack(frame)
+    dithered = convert(img, args.fill)
+    # The panel always scans in 800x480: the buffer must be rotated.
+    # If the image comes out upside down on your frame, use ROTATE_90.
+    data = pack(dithered.transpose(Image.Transpose.ROTATE_270))
     if len(data) != WIDTH * HEIGHT // 2:
         sys.exit("Error: unexpected buffer size (%d bytes)" % len(data))
 
